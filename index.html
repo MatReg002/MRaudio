@@ -3,9 +3,18 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="theme-color" content="#000000">
 <title>MRaudio</title>
+
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="application-name" content="MRaudio">
+<meta name="apple-mobile-web-app-title" content="MRaudio">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="theme-color" content="#000000">
+
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600&display=swap" rel="stylesheet">
@@ -118,18 +127,31 @@ document.getElementById("imp").addEventListener("click", () => {
 
 async function chiama(url, opzioni) {
   const chiave = getChiave();
-  if (!chiave) throw new Error("Inserisci prima la chiave API");
+  if (!chiave) throw new Error("Inserisci prima la chiave API (tasto in alto)");
   const res = await fetch(url, {
     ...opzioni,
     headers: { ...(opzioni.headers || {}), Authorization: "Bearer " + chiave },
   });
+  if (res.status === 401) throw new Error("Chiave API non valida o scaduta: tocca «Chiave API» e inseriscine una nuova");
+  if (res.status === 429) throw new Error("Troppe richieste: riprova tra un minuto");
   if (!res.ok) throw new Error("Errore " + res.status);
   return res.json();
 }
 
+function rilascia() {
+  if (stream) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+}
+
 async function avvia() {
   if (rec) return;
-  try { speechSynthesis.speak(new SpeechSynthesisUtterance("")); } catch (e) {}
+  try {
+    const u0 = new SpeechSynthesisUtterance(".");
+    u0.volume = 0;
+    speechSynthesis.speak(u0);
+  } catch (e) {}
   try {
     stream = stream || await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
@@ -139,7 +161,7 @@ async function avvia() {
   chunks = [];
   rec = new MediaRecorder(stream);
   rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
-  rec.onstop = elabora;
+  rec.onstop = () => { rilascia(); elabora(); };
   rec.start();
   inizio = Date.now();
   btn.classList.add("rec");
@@ -191,7 +213,7 @@ async function elabora() {
     });
     const traduzione = t.choices[0].message.content.trim();
 
-    mostra(testo, traduzione, d.tag);
+    mostra(testo, traduzione, d.tag, d.voce);
     parla(traduzione, d.voce);
     stato("Tieni premuto il pulsante e parla");
   } catch (e) {
@@ -199,12 +221,13 @@ async function elabora() {
   }
 }
 
-function mostra(orig, trad, tag) {
+function mostra(orig, trad, tag, voce) {
   const m = document.createElement("div");
   m.className = "msg";
+  m.style.cursor = "pointer";
   const g = document.createElement("div");
   g.className = "tag";
-  g.textContent = tag;
+  g.textContent = tag + "  ·  tocca per riascoltare";
   const o = document.createElement("div");
   o.className = "orig";
   o.textContent = orig;
@@ -212,18 +235,22 @@ function mostra(orig, trad, tag) {
   t.className = "trad";
   t.textContent = trad;
   m.append(g, o, t);
+  m.addEventListener("click", () => parla(trad, voce));
   log.append(m);
   log.scrollTop = log.scrollHeight;
 }
 
 function parla(testo, lang) {
   speechSynthesis.cancel();
-  const u = new SpeechSynthesisUtterance(testo);
-  u.lang = lang;
-  const v = speechSynthesis.getVoices()
-    .find(x => x.lang.replace("_", "-").startsWith(lang));
-  if (v) u.voice = v;
-  speechSynthesis.speak(u);
+  setTimeout(() => {
+    const u = new SpeechSynthesisUtterance(testo);
+    u.lang = lang;
+    u.volume = 1;
+    const v = speechSynthesis.getVoices()
+      .find(x => x.lang.replace("_", "-").startsWith(lang));
+    if (v) u.voice = v;
+    speechSynthesis.speak(u);
+  }, 80);
 }
 
 btn.addEventListener("pointerdown", avvia);
