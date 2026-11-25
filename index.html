@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#000000">
+<title>MRaudio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { background: #000; }
+  body {
+    margin: 0; min-height: 100dvh; color: #f2f2f2;
+    font-family: -apple-system, system-ui, sans-serif;
+    display: flex; flex-direction: column; position: relative;
+    padding: env(safe-area-inset-top) 16px env(safe-area-inset-bottom);
+  }
+
+  #logo {
+    position: fixed; top: 20%; left: 0; right: 0; z-index: 0;
+    text-align: center; pointer-events: none; user-select: none;
+  }
+  #logo .w {
+    font-family: "Orbitron", "Eurostile", "Avenir Next", system-ui, sans-serif;
+    font-size: 52px; letter-spacing: 0.12em; line-height: 1;
+  }
+  #logo .mr { color: #ffd400; font-weight: 600; }
+  #logo .au { color: #d6d6d6; font-weight: 400; }
+  #logo svg { display: block; margin: 14px auto 0; width: 120px; height: 24px; }
+
+  header, #log, #stato, #btn { position: relative; z-index: 1; }
+  header { display: flex; justify-content: flex-end; padding: 12px 0; }
+  #imp {
+    background: transparent; color: #9a9a9a; border: 1px solid #333;
+    border-radius: 8px; padding: 7px 12px; font-size: 13px;
+  }
+
+  #log {
+    flex: 1; overflow-y: auto; display: flex; flex-direction: column;
+    gap: 12px; padding: 8px 0;
+  }
+  .msg {
+    background: rgba(24, 24, 24, 0.88); border: 1px solid #2a2a2a;
+    border-radius: 14px; padding: 12px 14px;
+  }
+  .tag {
+    font-family: "Orbitron", system-ui, sans-serif; font-size: 11px;
+    letter-spacing: 0.1em; color: #ffd400; margin-bottom: 6px;
+  }
+  .orig { color: #a8a8a8; font-size: 14px; margin-bottom: 4px; }
+  .trad { font-size: 20px; }
+
+  #stato { text-align: center; color: #9a9a9a; min-height: 24px; padding: 6px 0; font-size: 14px; }
+
+  #btn {
+    width: 150px; height: 150px; border-radius: 50%;
+    border: 6px solid #d9d9d9; background: #e02a1b; color: #fff;
+    font-size: 15px; line-height: 1.3; margin: 8px auto 28px;
+    touch-action: none; user-select: none; -webkit-user-select: none;
+    -webkit-touch-callout: none; transition: transform 0.1s;
+  }
+  #btn.rec { background: #ff3b28; transform: scale(1.06); }
+</style>
+</head>
+<body>
+  <div id="logo" aria-hidden="true">
+    <div class="w"><span class="mr">MR</span><span class="au">audio</span></div>
+    <svg viewBox="0 0 120 24">
+      <rect x="4"   y="8"  width="4" height="8"  rx="2" fill="#d6d6d6"/>
+      <rect x="20"  y="4"  width="4" height="16" rx="2" fill="#d6d6d6"/>
+      <rect x="36"  y="0"  width="4" height="24" rx="2" fill="#ffd400"/>
+      <rect x="52"  y="6"  width="4" height="12" rx="2" fill="#ffd400"/>
+      <rect x="68"  y="2"  width="4" height="20" rx="2" fill="#ffd400"/>
+      <rect x="84"  y="5"  width="4" height="14" rx="2" fill="#d6d6d6"/>
+      <rect x="100" y="9"  width="4" height="6"  rx="2" fill="#d6d6d6"/>
+    </svg>
+  </div>
+
+  <header><button id="imp">Chiave API</button></header>
+  <div id="log"></div>
+  <div id="stato">Tieni premuto il pulsante e parla</div>
+  <button id="btn">Tieni premuto<br>e parla</button>
+
+<script>
+const MODELLO_STT = "whisper-large-v3-turbo";
+const MODELLO_CHAT = "openai/gpt-oss-120b";
+const URL_STT = "https://api.groq.com/openai/v1/audio/transcriptions";
+const URL_CHAT = "https://api.groq.com/openai/v1/chat/completions";
+
+const NOMI = { italian: "it", it: "it", english: "en", en: "en" };
+const DIR = {
+  it: { da: "italiano", a: "inglese", voce: "en-US", tag: "IT → EN" },
+  en: { da: "inglese", a: "italiano", voce: "it-IT", tag: "EN → IT" },
+};
+
+const btn = document.getElementById("btn");
+const log = document.getElementById("log");
+const statoEl = document.getElementById("stato");
+
+let stream = null, rec = null, chunks = [], inizio = 0;
+
+function stato(t) { statoEl.textContent = t; }
+
+function getChiave() {
+  try { return localStorage.getItem("groq_key") || ""; } catch (e) { return ""; }
+}
+function setChiave(k) {
+  try { localStorage.setItem("groq_key", k); } catch (e) {}
+}
+
+document.getElementById("imp").addEventListener("click", () => {
+  const k = prompt("Incolla la tua chiave API Groq:", getChiave());
+  if (k !== null) setChiave(k.trim());
+});
+
+async function chiama(url, opzioni) {
+  const chiave = getChiave();
+  if (!chiave) throw new Error("Inserisci prima la chiave API");
+  const res = await fetch(url, {
+    ...opzioni,
+    headers: { ...(opzioni.headers || {}), Authorization: "Bearer " + chiave },
+  });
+  if (!res.ok) throw new Error("Errore " + res.status);
+  return res.json();
+}
+
+async function avvia() {
+  if (rec) return;
+  try { speechSynthesis.speak(new SpeechSynthesisUtterance("")); } catch (e) {}
+  try {
+    stream = stream || await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    stato("Microfono non autorizzato");
+    return;
+  }
+  chunks = [];
+  rec = new MediaRecorder(stream);
+  rec.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
+  rec.onstop = elabora;
+  rec.start();
+  inizio = Date.now();
+  btn.classList.add("rec");
+  stato("Ti ascolto...");
+}
+
+function ferma() {
+  btn.classList.remove("rec");
+  if (rec && rec.state !== "inactive") rec.stop();
+}
+
+async function elabora() {
+  const tipo = rec.mimeType || "audio/webm";
+  rec = null;
+  if (Date.now() - inizio < 500) { stato("Troppo breve, tieni premuto di più"); return; }
+
+  const ext = tipo.includes("mp4") ? "m4a" : tipo.includes("ogg") ? "ogg" : "webm";
+  const blob = new Blob(chunks, { type: tipo });
+
+  try {
+    stato("Trascrivo...");
+    const fd = new FormData();
+    fd.append("file", blob, "frase." + ext);
+    fd.append("model", MODELLO_STT);
+    fd.append("response_format", "verbose_json");
+    fd.append("temperature", "0");
+    const r = await chiama(URL_STT, { method: "POST", body: fd });
+
+    const testo = (r.text || "").trim();
+    const lingua = NOMI[String(r.language).toLowerCase()];
+    if (!testo) { stato("Non ho sentito nulla"); return; }
+    if (!DIR[lingua]) { stato("Lingua non supportata: " + r.language); return; }
+
+    const d = DIR[lingua];
+    stato("Traduco...");
+    const t = await chiama(URL_CHAT, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: MODELLO_CHAT,
+        temperature: 0,
+        messages: [
+          { role: "system", content:
+            "Traduci dall'" + d.da + " all'" + d.a + " in modo naturale. " +
+            "Rispondi solo con la traduzione, senza commenti, virgolette o simboli." },
+          { role: "user", content: testo },
+        ],
+      }),
+    });
+    const traduzione = t.choices[0].message.content.trim();
+
+    mostra(testo, traduzione, d.tag);
+    parla(traduzione, d.voce);
+    stato("Tieni premuto il pulsante e parla");
+  } catch (e) {
+    stato("Errore: " + e.message);
+  }
+}
+
+function mostra(orig, trad, tag) {
+  const m = document.createElement("div");
+  m.className = "msg";
+  const g = document.createElement("div");
+  g.className = "tag";
+  g.textContent = tag;
+  const o = document.createElement("div");
+  o.className = "orig";
+  o.textContent = orig;
+  const t = document.createElement("div");
+  t.className = "trad";
+  t.textContent = trad;
+  m.append(g, o, t);
+  log.append(m);
+  log.scrollTop = log.scrollHeight;
+}
+
+function parla(testo, lang) {
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(testo);
+  u.lang = lang;
+  const v = speechSynthesis.getVoices()
+    .find(x => x.lang.replace("_", "-").startsWith(lang));
+  if (v) u.voice = v;
+  speechSynthesis.speak(u);
+}
+
+btn.addEventListener("pointerdown", avvia);
+window.addEventListener("pointerup", ferma);
+window.addEventListener("pointercancel", ferma);
+btn.addEventListener("contextmenu", e => e.preventDefault());
+</script>
+</body>
+</html>
